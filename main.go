@@ -53,10 +53,11 @@ type AppConfig struct {
 
 var appConfig *AppConfig
 
-var QuestionDoesntExist = errors.New("Question ID doesn't exist")
-var AnswerDoesntExist = errors.New("Answer ID doesn't exist")
+var QuestionDoesntExist = errors.New("Question with such ID doesn't exist")
+var AnswerDoesntExist = errors.New("Answer with such ID doesn't exist")
 var WrongCommandFormat = errors.New("Wrong command format")
-var NotEnoughPermissions = errors.New("User have no enough permission for that action")
+var NotEnoughPermissions = errors.New("User has not enough permission for that action")
+var NoteDoesntExist = errors.New("Note with such ID doesn't exist")
 
 const appConfigPath string = "config.json"
 const allGroupName string = "all"
@@ -160,6 +161,65 @@ func (s *SQLStore) createAnswersTable() (err error) {
 	return
 }
 
+func (s *SQLStore) createNotesTable() (err error) {
+	creationQuery := `
+	CREATE TABLE IF NOT EXISTS Notes (
+	    id integer primary key
+	    user text
+	    content text
+	    time integer
+	)`
+	_, err = s.db.Exec(creationQuery)
+	if err != nil {
+		return
+	}
+	return
+}
+
+type Note struct {
+	NoteID int
+	User   string
+	Text   string
+	Date   time.Time
+}
+
+func (s *SQLStore) addNote(n *Note) (err error) {
+	s.Lock()
+	defer s.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return
+	}
+	defer func(tx *sql.Tx, err *error) {
+		*err = tx.Commit()
+	}(tx, &err)
+	insertQuery, err := tx.Prepare(`
+	    INSERT INTO Notes (user, content, time)
+	    VALUES (?, ?, ?)`)
+	if err != nil {
+		return
+	}
+	defer insertQuery.Close()
+	_, err = insertQuery.Exec(n.User, n.Text, n.Date.Unix())
+	if err != nil {
+		return
+	}
+	return
+}
+
+func (s *SQLStore) getNote(noteId int) (note *Note, err error) {
+	rows, err := s.db.Query(`SELECT (id, user, content, time)
+                                      FROM Notes
+                                          WHERE id = ?`, noteId)
+	defer rows.Close()
+	if rows.Next() {
+
+	} else {
+		err = NoteDoesntExist
+	}
+	return
+}
+
 func (s *SQLStore) closeQuestion(questionID int) (err error) {
 	_, err = s.db.Exec("UPDATE Questions SET isClosed = 1 WHERE id = ?",
 		questionID)
@@ -217,7 +277,7 @@ func (s *SQLStore) addQuestion(q *Question) (questionID int, err error) {
 		*err = tx.Commit()
 	}(tx, &err)
 
-	insert_query, err := tx.Prepare(`
+	insertQuery, err := tx.Prepare(`
 	INSERT INTO Questions 
 	    (user, content, time, receiver, isClosed, chatID)
 		    VALUES (?, ?, ?, ?, ?, ?)`)
@@ -225,11 +285,11 @@ func (s *SQLStore) addQuestion(q *Question) (questionID int, err error) {
 		log.Println(err)
 		return
 	}
-	defer insert_query.Close()
+	defer insertQuery.Close()
 	if err != nil {
 		return
 	}
-	result, err := insert_query.Exec(q.User, q.Text, q.Date.Unix(),
+	result, err := insertQuery.Exec(q.User, q.Text, q.Date.Unix(),
 		q.Rec.User, q.IsClosed, q.ChatID)
 	if err != nil {
 		return
@@ -254,16 +314,16 @@ func (s *SQLStore) addAnswer(a *Answer) (answerID int, err error) {
 		*err = tx.Commit()
 	}(tx, &err)
 
-	insert_query, err := tx.Prepare(
+	insertQuery, err := tx.Prepare(
 		`INSERT INTO Answers
 		     (user, content, time, questionID)
 			 VALUES (?, ?, ?, ?)`)
 	if err != nil {
 		return
 	}
-	defer insert_query.Close()
+	defer insertQuery.Close()
 
-	result, err := insert_query.Exec(a.User, a.Text, a.Date.Unix(), a.QuestionID)
+	result, err := insertQuery.Exec(a.User, a.Text, a.Date.Unix(), a.QuestionID)
 	if err != nil {
 		return
 	}
@@ -273,7 +333,6 @@ func (s *SQLStore) addAnswer(a *Answer) (answerID int, err error) {
 	if err != nil {
 		return
 	}
-	return
 	return
 }
 
