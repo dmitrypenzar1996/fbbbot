@@ -48,15 +48,18 @@ type SQLStore struct {
 
 type AppConfig struct {
 	TelegramBotToken string
+	Admins           []string
 }
 
 var appConfig *AppConfig
 
 var QuestionDoesntExist = errors.New("Question ID doesn't exist")
 var AnswerDoesntExist = errors.New("Answer ID doesn't exist")
-var WrongCommandFormat = errors.New("Question ID doesn't exist")
+var WrongCommandFormat = errors.New("Wrong command format")
+var NotEnoughPermissions = errors.New("User have no enough permission for that action")
 
 const appConfigPath string = "config.json"
+const allGroupName string = "all"
 
 func init() {
 	var err error
@@ -158,7 +161,7 @@ func (s *SQLStore) createAnswersTable() (err error) {
 }
 
 func (s *SQLStore) closeQuestion(questionID int) (err error) {
-	_, err = s.db.Exec("UPDATE Questions SET isClosed = 1 WHERE questionID = ?",
+	_, err = s.db.Exec("UPDATE Questions SET isClosed = 1 WHERE id = ?",
 		questionID)
 	if err != nil {
 		return
@@ -167,7 +170,7 @@ func (s *SQLStore) closeQuestion(questionID int) (err error) {
 }
 
 func (s *SQLStore) openQuestion(questionID int) (err error) {
-	_, err = s.db.Exec("UPDATE Questions SET isClosed = 0 WHERE questionID = ?",
+	_, err = s.db.Exec("UPDATE Questions SET isClosed = 0 WHERE id = ?",
 		questionID)
 	if err != nil {
 		return
@@ -177,7 +180,7 @@ func (s *SQLStore) openQuestion(questionID int) (err error) {
 
 func (s *SQLStore) findAllQuestionsTo(receiver string) (questions []*Question, err error) {
 	rows, err := s.db.Query(`SELECT id, user, content, time,  receiver, isClosed, chatID
-                            FROM Questions WHERE receiver = ?`, receiver)
+                            FROM Questions WHERE receiver = ? AND isClosed = 0`, receiver)
 	if err != nil {
 		return
 	}
@@ -203,7 +206,7 @@ func (s *SQLStore) findAllQuestionsTo(receiver string) (questions []*Question, e
 // read by specific writer from him and do all writings at the same time, but for
 // our application it isn't necessary
 
-func (s *SQLStore) addQuestion(q *Question) (err error) {
+func (s *SQLStore) addQuestion(q *Question) (questionID int, err error) {
 	s.Lock()
 	defer s.Unlock()
 	tx, err := s.db.Begin()
@@ -226,15 +229,21 @@ func (s *SQLStore) addQuestion(q *Question) (err error) {
 	if err != nil {
 		return
 	}
-	_, err = insert_query.Exec(q.User, q.Text, q.Date.Unix(),
+	result, err := insert_query.Exec(q.User, q.Text, q.Date.Unix(),
 		q.Rec.User, q.IsClosed, q.ChatID)
+	if err != nil {
+		return
+	}
+
+	questionID64, err := result.LastInsertId()
+	questionID = int(questionID64)
 	if err != nil {
 		return
 	}
 	return
 }
 
-func (s *SQLStore) addAnswer(a *Answer) (err error) {
+func (s *SQLStore) addAnswer(a *Answer) (answerID int, err error) {
 	s.Lock()
 	defer s.Unlock()
 	tx, err := s.db.Begin()
@@ -245,7 +254,7 @@ func (s *SQLStore) addAnswer(a *Answer) (err error) {
 		*err = tx.Commit()
 	}(tx, &err)
 
-	insert_query, err := s.db.Prepare(
+	insert_query, err := tx.Prepare(
 		`INSERT INTO Answers
 		     (user, content, time, questionID)
 			 VALUES (?, ?, ?, ?)`)
@@ -254,7 +263,60 @@ func (s *SQLStore) addAnswer(a *Answer) (err error) {
 	}
 	defer insert_query.Close()
 
-	_, err = insert_query.Exec(a.User, a.Text, a.Date.Unix(), a.QuestionID)
+	result, err := insert_query.Exec(a.User, a.Text, a.Date.Unix(), a.QuestionID)
+	if err != nil {
+		return
+	}
+
+	answerID64, err := result.LastInsertId()
+	answerID = int(answerID64)
+	if err != nil {
+		return
+	}
+	return
+	return
+}
+
+func (s *SQLStore) deleteQuestion(questionID int) (err error) {
+	s.Lock()
+	defer s.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return
+	}
+	defer func(tx *sql.Tx, err *error) {
+		*err = tx.Commit()
+	}(tx, &err)
+
+	delete_query, err := tx.Prepare("DELETE FROM Questions WHERE id = ?")
+	defer delete_query.Close()
+	if err != nil {
+		return
+	}
+	_, err = delete_query.Exec(questionID)
+	if err != nil {
+		return
+	}
+	return
+}
+
+func (s *SQLStore) deleteAnswer(answerID int) (err error) {
+	s.Lock()
+	defer s.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return
+	}
+	defer func(tx *sql.Tx, err *error) {
+		*err = tx.Commit()
+	}(tx, &err)
+
+	delete_query, err := tx.Prepare("DELETE FROM Answers WHERE id = ?")
+	defer delete_query.Close()
+	if err != nil {
+		return
+	}
+	_, err = delete_query.Exec(answerID)
 	if err != nil {
 		return
 	}
@@ -334,7 +396,7 @@ func parseSlashQuestion(m *tgbotapi.Message) (q *Question, err error) {
 	q = new(Question)
 	q.Date = m.Time().UTC()
 	q.User = m.From.UserName
-	q.Rec = NewReceiver("all")
+	q.Rec = NewReceiver(allGroupName)
 	q.Text = m.CommandArguments()
 	if strings.TrimSpace(q.Text) == "" {
 		err = WrongCommandFormat
@@ -352,7 +414,7 @@ func parseSlashQuestionTo(m *tgbotapi.Message) (q *Question, err error) {
 	q.Date = m.Time().UTC()
 	q.User = m.From.UserName
 	cmd_args := strings.SplitN(m.CommandArguments(), " ", 3)
-	if len(cmd_args) != 2 {
+	if len(cmd_args) != 3 {
 		err = WrongCommandFormat
 		return
 	}
@@ -360,6 +422,7 @@ func parseSlashQuestionTo(m *tgbotapi.Message) (q *Question, err error) {
 	q.Text = cmd_args[1]
 	q.Answers = []*Answer{}
 	q.IsClosed = false
+	q.ChatID = m.Chat.ID
 	q.QuestionID = -1
 	return
 }
@@ -371,13 +434,13 @@ func questionCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, er
 		reply = "Неверный формат команды"
 		return
 	}
-	err = store.addQuestion(q)
+	questionID, err := store.addQuestion(q)
 	if err != nil {
 		log.Printf("Error while adding question : %v\n", err)
 		reply = "Ошибка доступа к базе данных"
 		return
 	}
-	reply = "Вопрос принят"
+	reply = fmt.Sprintf("Вопрос принят, его id: %d", questionID)
 	return
 }
 
@@ -388,24 +451,55 @@ func questionToCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, 
 		reply = "Неправильный формат"
 		return
 	}
-	err = store.addQuestion(q)
+	questionID, err := store.addQuestion(q)
 	if err != nil {
 		log.Printf("Error while adding question : %v\n", err)
 		reply = "Ошибка доступа к базе данных"
 		return
 	}
-	reply = "Вопрос принят"
+	reply = fmt.Sprintf("Вопрос принят, его id: %d", questionID)
+	return
+}
+
+func inGroup(userList []string, user string) (flag bool) {
+	for _, value := range userList {
+		if value == user {
+			flag = true
+			return
+		}
+	}
+	flag = false
 	return
 }
 
 func closeCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, err error) {
-	q_id, err := parseSlashClose(m)
+	qID, err := parseSlashClose(m)
 	if err != nil {
 		log.Print(err)
 		reply = "Неверный формат команды"
 		return
 	}
-	err = store.closeQuestion(q_id)
+
+	question, err := store.getQuestion(qID)
+	if err != nil {
+		if err == QuestionDoesntExist {
+			log.Println(err)
+			reply = "Вопрос с таким id не существует"
+			return
+		} else {
+			log.Println(err)
+			reply = "Ошибка доступа к базе данных"
+			return
+		}
+	}
+
+	if m.From.UserName != question.User && !(inGroup(appConfig.Admins, m.From.UserName)) {
+		err = NotEnoughPermissions
+		reply = "Недостаточно прав"
+		return
+	}
+
+	err = store.closeQuestion(qID)
 	if err != nil {
 		log.Print(err)
 		reply = "Ошибка доступа к базе данных"
@@ -416,13 +510,21 @@ func closeCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, err e
 }
 
 func openCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, err error) {
-	q_id, err := parseSlashOpen(m)
+	qID, err := parseSlashOpen(m)
 	if err != nil {
 		log.Print(err)
 		reply = "Неверный формат команды"
 		return
 	}
-	err = store.openQuestion(q_id)
+
+	question, err := store.getQuestion(qID)
+	if m.From.UserName != question.User && !(inGroup(appConfig.Admins, m.From.UserName)) {
+		err = NotEnoughPermissions
+		reply = "Недостаточно прав"
+		return
+	}
+
+	err = store.openQuestion(qID)
 	if err != nil {
 		log.Print(err)
 		reply = "Ошибка доступа к базе данных"
@@ -432,7 +534,7 @@ func openCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, err er
 	return
 }
 
-func listMyQuestionsCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, err error) {
+func listToMeQuestionsCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, err error) {
 	questions, err := store.findAllQuestionsTo(m.From.UserName)
 	if err != nil {
 		log.Printf("Error while accessing questiong: %v\n", err)
@@ -444,7 +546,7 @@ func listMyQuestionsCommandExec(m *tgbotapi.Message, store *SQLStore) (reply str
 }
 
 func listQuestionsCommandExec(store *SQLStore) (reply string, err error) {
-	questions, err := store.findAllQuestionsTo("all")
+	questions, err := store.findAllQuestionsTo(allGroupName)
 	if err != nil {
 		log.Printf("Error with list_questions : %v\n", err)
 		reply = "Ошибка доступа к базе данных"
@@ -464,7 +566,6 @@ func answerCommandExec(m *tgbotapi.Message, store *SQLStore, bot *tgbotapi.BotAP
 		}
 		return
 	}
-	store.addAnswer(answer)
 
 	question, err := store.getQuestion(answer.QuestionID)
 	if err != nil {
@@ -477,6 +578,22 @@ func answerCommandExec(m *tgbotapi.Message, store *SQLStore, bot *tgbotapi.BotAP
 		return
 	}
 
+	answerID, err := store.addAnswer(answer)
+	if err != nil {
+		reply = "Ошибка доступа к базе данных"
+		return
+	}
+
+	if question.Rec.User != allGroupName {
+		// answer by Receiver automatically closes question
+		err = store.closeQuestion(question.QuestionID)
+		if err != nil {
+			log.Println(err)
+			reply = "Ошибка доступа к базе данных"
+			return
+		}
+	}
+
 	if question.ChatID != m.Chat.ID {
 		log.Println("Making asker notification")
 		msg := makeAskerNotification(answer, question)
@@ -485,7 +602,8 @@ func answerCommandExec(m *tgbotapi.Message, store *SQLStore, bot *tgbotapi.BotAP
 			log.Println(err)
 		}
 	}
-	reply = "Ответ сохранен"
+
+	reply = fmt.Sprintf("Ответ сохранен, его id: %d", answerID)
 	return
 }
 
@@ -513,6 +631,86 @@ func listAnswersCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string,
 	return
 }
 
+func parseSlashDeleteAnswer(m *tgbotapi.Message) (answerID int, err error) {
+	if m.CommandArguments() == "" {
+		err = WrongCommandFormat
+		return
+	}
+	answerID, err = strconv.Atoi(m.CommandArguments())
+	if err != nil {
+		return
+	}
+	return
+}
+
+func deleteAnswerCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, err error) {
+	answerID, err := parseSlashDeleteAnswer(m)
+	if err != nil {
+		reply = "Неверный формат команды"
+		return
+	}
+	answer, err := store.getAnswer(answerID)
+	if err != nil {
+		if err == AnswerDoesntExist {
+			reply = "Вопроса с таким id нет в базе данных"
+		} else {
+			reply = "Ошибка доступа к базе данных"
+		}
+		return
+	}
+	if answer.User != m.From.UserName && !(inGroup(appConfig.Admins, m.From.UserName)) {
+		reply = "Недостаточно прав"
+		err = NotEnoughPermissions
+		return
+	}
+	err = store.deleteAnswer(answerID)
+	if err != nil {
+		reply = "Ошибка доступа к базе данных"
+		return
+	}
+	return
+}
+
+func parseSlashDeleteQuestion(m *tgbotapi.Message) (questionID int, err error) {
+	if m.CommandArguments() == "" {
+		err = WrongCommandFormat
+		return
+	}
+	questionID, err = strconv.Atoi(m.CommandArguments())
+	if err != nil {
+		return
+	}
+	return
+}
+
+func deleteQuestionCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, err error) {
+	questionID, err := parseSlashDeleteQuestion(m)
+	if err != nil {
+		reply = "Неверный формат команды"
+		return
+	}
+	question, err := store.getQuestion(questionID)
+	if err != nil {
+		if err == QuestionDoesntExist {
+			reply = "Вопроса с таким id нет в базе данных"
+		} else {
+			reply = "Ошибка доступа к базе данных"
+		}
+		return
+	}
+
+	if question.User != m.From.UserName && !(inGroup(appConfig.Admins, m.From.UserName)) {
+		err = NotEnoughPermissions
+		return
+	}
+	err = store.deleteQuestion(questionID)
+
+	if err != nil {
+		return
+	}
+	return
+}
+
 func commandExec(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStore) (reply string, err error) {
 	switch update.Message.Command() {
 	case "start":
@@ -537,13 +735,13 @@ func commandExec(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStore)
 		if err != nil {
 			break
 		}
-	case "list_my_questions":
-		reply, err = listMyQuestionsCommandExec(update.Message, store)
+	case "list_questions":
+		reply, err = listQuestionsCommandExec(store)
 		if err != nil {
 			break
 		}
-	case "list_questions":
-		reply, err = listQuestionsCommandExec(store)
+	case "list_questions_to_me":
+		reply, err = listToMeQuestionsCommandExec(update.Message, store)
 		if err != nil {
 			break
 		}
@@ -557,9 +755,28 @@ func commandExec(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStore)
 		if err != nil {
 			break
 		}
+	case "delete_answer":
+		reply, err = deleteAnswerCommandExec(update.Message, store)
+		if err != nil {
+			log.Println(err)
+			break
+		}
+	case "delete_question":
+		reply, err = deleteQuestionCommandExec(update.Message, store)
+		if err != nil {
+			log.Println(err)
+			break
+		}
 	case "list_my_answers":
-		reply = "Command has not implemented yet"
-		break
+		reply = "Command is not implemented yet"
+	case "list_my_questions":
+		reply = "Command is not implemented yet"
+	case "important":
+		reply = "Command is not implemented yet"
+	case "list_important":
+		reply = "Command is not implemented yet"
+	case "delete_important":
+		reply = "Command is not implemented yet"
 	default:
 		log.Printf("%v is uknown command\n", update.Message.Command())
 		reply = "Неверная команда"
