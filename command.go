@@ -14,14 +14,20 @@ func processCommand(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLSto
 	reply, err := commandExec(bot, update, store)
 
 	log.Println(err)
-	if err != nil {
-		deleteConfig := tgbotapi.DeleteMessageConfig{
-			ChatID:    update.Message.Chat.ID,
-			MessageID: update.Message.MessageID,
-		}
-
-		go messageDeleter(bot, deleteConfig, appConfig.ErrorsTimeToDelete)
+	deleteConfig := tgbotapi.DeleteMessageConfig{
+		ChatID:    update.Message.Chat.ID,
+		MessageID: update.Message.MessageID,
 	}
+
+	var timeBeforeDeletion int
+	if err != nil {
+		timeBeforeDeletion = appConfig.ErrorsTimeToDelete
+	} else {
+		timeBeforeDeletion = appConfig.CommandsTimeToDelete
+	}
+
+	go messageDeleter(bot, deleteConfig, timeBeforeDeletion)
+
 	if reply != "" {
 		msg := tgbotapi.NewMessage(update.Message.Chat.ID, reply)
 		var m tgbotapi.Message
@@ -30,11 +36,12 @@ func processCommand(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLSto
 			log.Printf("Error sending reply to command: %v", err)
 			return
 		}
+
 		deleteConfig := tgbotapi.DeleteMessageConfig{
 			ChatID:    m.Chat.ID,
 			MessageID: m.MessageID,
 		}
-		go messageDeleter(bot, deleteConfig, appConfig.AnswersTimeToDelete)
+		go messageDeleter(bot, deleteConfig, timeBeforeDeletion)
 
 	}
 	return
@@ -185,6 +192,7 @@ func answerCommandExec(m *tgbotapi.Message, store *SQLStore, bot *tgbotapi.BotAP
 		reply = "Ошибка доступа к базе данных"
 		return
 	}
+	answer.AnswerID = answerID
 
 	if question.Rec.User != AllGroupName {
 		// answer by Receiver automatically closes question
@@ -197,22 +205,32 @@ func answerCommandExec(m *tgbotapi.Message, store *SQLStore, bot *tgbotapi.BotAP
 	}
 
 	if question.ChatID != m.Chat.ID {
-		log.Println("Making asker notification")
-		msg := makeAskerNotification(answer, question)
-		var m tgbotapi.Message
-		m, err = bot.Send(msg)
-		deleteConfig := tgbotapi.DeleteMessageConfig{
-			ChatID:    m.Chat.ID,
-			MessageID: m.MessageID,
-		}
-		go messageDeleter(bot, deleteConfig, appConfig.NotificationsTimeToDelete)
-
+		err = sendAskerNotification(bot, answer, question)
 		if err != nil {
-			log.Println(err)
+			log.Printf("Failed to send notification about new answer: %v", err)
 		}
 	}
 
 	reply = fmt.Sprintf("Ответ сохранен, его id: %d", answerID)
+	return
+}
+
+func sendAskerNotification(bot *tgbotapi.BotAPI, answer *Answer, question *Question) (err error) {
+	log.Println("Making asker notification")
+	msg := makeAskerNotification(answer, question)
+	var m tgbotapi.Message
+	m, err = bot.Send(msg)
+
+	if err != nil {
+		err = WrongChatID
+		return
+	}
+
+	deleteConfig := tgbotapi.DeleteMessageConfig{
+		ChatID:    1,
+		MessageID: m.MessageID,
+	}
+	go messageDeleter(bot, deleteConfig, appConfig.NotificationsTimeToDelete)
 	return
 }
 
@@ -374,6 +392,7 @@ func makeAskerNotification(answer *Answer, question *Question) (msg tgbotapi.Mes
 	message_text := fmt.Sprintf(
 		"На вопрос [%d], заданный @%s:\n        \"%s\"\n появился ответ от @%s:\n        \"%s\"",
 		question.QuestionID, question.User, question.Text, answer.User, answer.Text)
+
 	msg = tgbotapi.NewMessage(question.ChatID, message_text)
 	return
 }

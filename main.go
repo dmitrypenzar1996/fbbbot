@@ -58,9 +58,7 @@ func main() {
 }
 
 func processUpdate(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStore) (err error) {
-
 	log.Println("Receive update")
-
 	if update.CallbackQuery != nil {
 		log.Println("Receive callback")
 
@@ -69,7 +67,6 @@ func processUpdate(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStor
 	if (update.Message == nil) && (update.InlineQuery == nil) {
 		return
 	}
-
 	if update.InlineQuery != nil {
 		log.Println("Recognised as inline query")
 		err = processInlineQuery(bot, update, store)
@@ -78,11 +75,12 @@ func processUpdate(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStor
 		}
 	} else if !update.Message.IsCommand() {
 		if strings.HasPrefix(update.Message.Text, "------") {
+			log.Println("Receive inline answer")
 			deleteConfig := tgbotapi.DeleteMessageConfig{
 				ChatID:    update.Message.Chat.ID,
 				MessageID: update.Message.MessageID,
 			}
-			go messageDeleter(bot, deleteConfig, appConfig.AnswersTimeToDelete)
+			go messageDeleter(bot, deleteConfig, appConfig.InlineAnswersTimeToDelete)
 		}
 	} else {
 		err = processCommand(bot, update, store)

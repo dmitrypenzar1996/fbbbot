@@ -52,6 +52,7 @@ type AppConfig struct {
 	TelegramBotToken          string
 	Admins                    []string
 	ErrorsTimeToDelete        int
-	AnswersTimeToDelete       int
+	CommandsTimeToDelete      int
+	InlineAnswersTimeToDelete       int
 	NotificationsTimeToDelete int
 }

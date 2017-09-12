@@ -1,30 +1,13 @@
 package main
 
 import (
-	"github.com/go-telegram-bot-api/telegram-bot-api"
-	"strconv"
-	"log"
-	"strings"
 	"fmt"
+	"github.com/go-telegram-bot-api/telegram-bot-api"
+	"log"
+	"strconv"
+	"strings"
 	"time"
 )
-
-func parseSlashQuestion(m *tgbotapi.Message) (q *Question, err error) {
-	q = new(Question)
-	q.Date = m.Time().UTC()
-	q.User = m.From.UserName
-	q.Rec = NewReceiver(AllGroupName)
-	q.Text = m.CommandArguments()
-	if strings.TrimSpace(q.Text) == "" {
-		err = WrongCommandFormat
-		return
-	}
-	q.Answers = []*Answer{}
-	q.IsClosed = false
-	q.ChatID = m.Chat.ID
-	q.QuestionID = -1
-	return
-}
 
 func processQuery(query string) (command string, commandArgs string) {
 	splitRes := strings.SplitN(query, " ", 2)
@@ -69,14 +52,13 @@ func sendNotExistReply(bot *tgbotapi.BotAPI, update *tgbotapi.Update) (err error
 	return
 }
 
-
 func markAsBotText(in string) (out string) {
 	out = fmt.Sprintf("%s\n%s\n%s", BotMessageSign, in, BotMessageSign)
 	return
 }
 
 func questionToReply(q *Question, id int) (reply tgbotapi.InlineQueryResultArticle) {
-	dateText := q.Date.Local().Format("Jan 2, 2006 в 3:04pm")
+	dateText := formatDate(q.Date)
 	replyText := fmt.Sprintf(`
 Информация о вопросе [%d]
 *Задавший*: @%s
@@ -98,35 +80,15 @@ func questionToReply(q *Question, id int) (reply tgbotapi.InlineQueryResultArtic
 	return
 }
 
-func sendQuestionListReply(bot *tgbotapi.BotAPI,
-	store *SQLStore, queryId string, receiver string) (err error) {
-	questions, err := store.findAllQuestionsTo(receiver)
-	if err != nil {
-		return
-	}
-	var answers []interface{}
-	if len(questions) == 0 {
-		titleText := "Нет вопросов"
-		messagesText := markAsBotText(titleText)
-		reply := tgbotapi.NewInlineQueryResultArticle("1",
-			titleText, messagesText)
-		answers = append(answers, reply)
-	} else {
-		for id, q := range questions {
-			answers = append(answers, questionToReply(q, id))
-		}
-	}
-
+func sendEndReply(bot *tgbotapi.BotAPI, queryId string) (err error) {
 	inlineConfig := tgbotapi.InlineConfig{
 		InlineQueryID: queryId,
 		IsPersonal:    true,
 		CacheTime:     0,
-		Results:       answers,
+		Results:       []interface{}{},
 		NextOffset:    "",
 	}
-
-	res, err := bot.AnswerInlineQuery(inlineConfig)
-	log.Println(res)
+	_, err = bot.AnswerInlineQuery(inlineConfig)
 
 	if err != nil {
 		return
@@ -134,17 +96,279 @@ func sendQuestionListReply(bot *tgbotapi.BotAPI,
 	return
 }
 
-var INLINE_COMMANDS = []string{"list_questions", "list_answers", "list_questions_to_me",
-	"watch_question", "watch_answer"}
-
-func messageDeleter(bot *tgbotapi.BotAPI, config tgbotapi.DeleteMessageConfig, waitTime int) {
-	time.Sleep(time.Second * time.Duration(waitTime))
-	log.Printf("Deleting message %d from chat %d", config.MessageID, config.ChatID)
-	_, err := bot.DeleteMessage(config)
+func sendNoQuestionsReply(bot *tgbotapi.BotAPI, queryId string) (err error) {
+	err = sendSimpleStringReply(bot, queryId, "Нет вопросов")
 	if err != nil {
-		log.Println(err)
+		log.Printf("Error while sending no questions reply %v", err)
 		return
 	}
+	return
+}
+
+func sendChunkQuestionsReply(bot *tgbotapi.BotAPI, queryId string,
+	questions []*Question, offset int) (err error) {
+	var replies []interface{}
+	for id, q := range questions {
+		replies = append(replies, questionToReply(q, id))
+	}
+
+	inlineConfig := tgbotapi.InlineConfig{
+		InlineQueryID: queryId,
+		IsPersonal:    true,
+		CacheTime:     0,
+		Results:       replies,
+		NextOffset:    strconv.Itoa(offset + len(replies)),
+	}
+
+	_, err = bot.AnswerInlineQuery(inlineConfig)
+	if err != nil {
+		return
+	}
+	return
+
+}
+
+func sendQuestionList(bot *tgbotapi.BotAPI, store *SQLStore,
+	queryID string, offset int, questions []*Question) (err error) {
+	if len(questions) == 0 {
+		if offset == 0 {
+			err = sendNoQuestionsReply(bot, queryID)
+			if err != nil {
+				log.Printf("Error while sending no questions reply: %v", err)
+				return
+			}
+			return
+		} else {
+			err = sendEndReply(bot, queryID)
+			if err != nil {
+				log.Printf("Error while sending end reply: %v", err)
+			}
+			return
+		}
+	}
+
+	err = sendChunkQuestionsReply(bot, queryID, questions, offset)
+	if err != nil {
+		return
+	}
+	return
+}
+
+func sendQuestionListReply(bot *tgbotapi.BotAPI,
+	store *SQLStore, queryID string, receiver string, offset_str string) (err error) {
+	offset, err := convertQueryOffset(offset_str)
+	if err != nil {
+		log.Printf("Error while converting offset: %v", err)
+		return
+	}
+
+	questions, err := store.findQuestionsTo(receiver, MaxSendInlineObjects, offset)
+	if err != nil {
+		log.Printf("Error accessing sql store: %v", err)
+		return
+	}
+	err = sendQuestionList(bot, store, queryID, offset, questions)
+	if err != nil {
+		log.Printf("Error sending questions: %v", err)
+		return
+	}
+	return
+
+}
+
+func answerToReply(store *SQLStore, a *Answer, id int) (reply tgbotapi.InlineQueryResultArticle) {
+	q, err := store.getQuestion(a.QuestionID)
+	if err != nil {
+		log.Printf("Error accessing SQL Database %v", err)
+		return
+	}
+
+	log.Println(a.Date)
+	dateText := formatDate(a.Date)
+	replyText := fmt.Sprintf(`Информация о ответе %d
+*Вопрос : %s*
+*Ответивший*: @%s
+*Дата*: %s:
+*Текст ответа*:
+"%s"`, a.AnswerID, q.Text, a.User, dateText, a.Text)
+
+	replyText = markAsBotText(replyText)
+
+	replyTitle := fmt.Sprintf("От @%s в %s", a.User, dateText)
+
+	reply = tgbotapi.NewInlineQueryResultArticleMarkdown(strconv.Itoa(id),
+		replyTitle, replyText)
+	if len(a.Text) > MaxShownMessageLength {
+		reply.Description = fmt.Sprintf("%s...", a.Text[:MaxShownMessageLength])
+	} else {
+		reply.Description = a.Text
+	}
+	return
+}
+
+func sendSimpleStringReply(bot *tgbotapi.BotAPI, queryId string,
+	message string) (err error) {
+
+	titleText := message
+	messagesText := markAsBotText(titleText)
+	reply := tgbotapi.NewInlineQueryResultArticle("1",
+		titleText, messagesText)
+
+	inlineConfig := tgbotapi.InlineConfig{
+		InlineQueryID: queryId,
+		IsPersonal:    true,
+		CacheTime:     0,
+		Results:       []interface{}{reply},
+		NextOffset:    "",
+	}
+	_, err = bot.AnswerInlineQuery(inlineConfig)
+
+	if err != nil {
+		return
+	}
+	return
+}
+
+func sendNoAnswersReply(bot *tgbotapi.BotAPI, queryID string) (err error) {
+	err = sendSimpleStringReply(bot, queryID, "Нет ответов")
+	if err != nil {
+		return
+	}
+	return
+}
+
+func sendWrongFormatReply(bot *tgbotapi.BotAPI, queryID string) (err error) {
+	err = sendSimpleStringReply(bot, queryID, "Неправильный формат команды")
+	if err != nil {
+		return
+	}
+	return
+}
+
+func convertQueryOffset(offset_str string) (offset int, err error) {
+	if offset_str == "" {
+		offset = 0
+		return
+	}
+	offset, err = strconv.Atoi(offset_str)
+	if err != nil {
+		return
+	}
+	return
+}
+
+func sendListAnswers(bot *tgbotapi.BotAPI, store *SQLStore,
+	queryID string, offset int, answers []*Answer) (err error) {
+	if len(answers) == 0 {
+		if offset == 0 {
+			err = sendNoAnswersReply(bot, queryID)
+			if err != nil {
+				log.Printf("Error while sending no answers reply: %v", err)
+				return
+			}
+			return
+		} else {
+			err = sendEndReply(bot, queryID)
+			if err != nil {
+				log.Printf("Error while sending end reply: %v", err)
+				return
+			}
+			return
+		}
+	}
+
+	err = sendChunkAnswersReply(bot, store, queryID, answers, offset)
+	if err != nil {
+		log.Printf("Error while sending chunk of answers: %v", err)
+		return
+	}
+	return
+}
+
+func sendChunkAnswersReply(bot *tgbotapi.BotAPI, store *SQLStore, queryID string,
+	questions []*Answer, offset int) (err error) {
+	var replies []interface{}
+	for id, a := range questions {
+		replies = append(replies, answerToReply(store, a, id))
+	}
+
+	inlineConfig := tgbotapi.InlineConfig{
+		InlineQueryID: queryID,
+		IsPersonal:    true,
+		CacheTime:     0,
+		Results:       replies,
+		NextOffset:    strconv.Itoa(offset + len(replies)),
+	}
+
+	_, err = bot.AnswerInlineQuery(inlineConfig)
+	if err != nil {
+		return
+	}
+	return
+}
+
+func sendAnswersListReply(bot *tgbotapi.BotAPI,
+	store *SQLStore, queryID string, questionID int, offset_str string) (err error) {
+	offset, err := convertQueryOffset(offset_str)
+	if err != nil {
+		log.Printf("Error while converting offset: %v", err)
+		return
+	}
+
+	answers, err := store.findAnswersFor(questionID, MaxSendInlineObjects, offset)
+	if err != nil {
+		log.Printf("Error accesing sql store: %v", err)
+		return
+	}
+
+	err = sendListAnswers(bot, store, queryID, offset, answers)
+	if err != nil {
+		log.Printf("Error while sending questions: %v", err)
+		return
+	}
+	return
+}
+
+func sendListAnswersToUserReply(bot *tgbotapi.BotAPI, store *SQLStore,
+	queryID string, user string, offset_str string) (err error) {
+	offset, err := convertQueryOffset(offset_str)
+	if err != nil {
+		log.Printf("Error while converting offset: %v", err)
+		return
+	}
+	answers, err := store.getAnswersFor(user, MaxSendInlineObjects, offset)
+
+	if err != nil {
+		log.Printf("Error accessing database: %v", err)
+		return
+	}
+
+	err = sendListAnswers(bot, store, queryID, offset, answers)
+	if err != nil {
+		log.Printf("Error while sending questions: %v", err)
+	}
+	return
+}
+
+func sendUserQuestionListReply(bot *tgbotapi.BotAPI,
+	store *SQLStore, queryID string, user string, offset_str string) (err error) {
+	offset, err := convertQueryOffset(offset_str)
+	if err != nil {
+		log.Printf("Error while converting offset: %v", err)
+		return
+	}
+
+	questions, err := store.findQuestionsFrom(user, MaxSendInlineObjects, offset)
+	if err != nil {
+		log.Printf("Error accessing sql store: %v", err)
+		return
+	}
+	err = sendQuestionList(bot, store, queryID, offset, questions)
+	if err != nil {
+		log.Printf("Error sending questions: %v", err)
+		return
+	}
+	return
 }
 
 func processInlineQuery(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStore) (err error) {
@@ -160,8 +384,68 @@ func processInlineQuery(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQ
 		return
 	}
 	command, commandArgs := processQuery(query)
-	log.Println(command, commandArgs)
-	if !inGroup(INLINE_COMMANDS, command) {
+
+	switch command {
+	case "list_questions":
+		err = sendQuestionListReply(bot, store, update.InlineQuery.ID, AllGroupName,
+			update.InlineQuery.Offset)
+		if err != nil {
+			log.Printf("Error while sending questions list reply: %v", err)
+			return
+		}
+		return
+
+	case "list_questions_to_me":
+		err = sendQuestionListReply(bot, store, update.InlineQuery.ID,
+			update.InlineQuery.From.UserName, update.InlineQuery.Offset)
+		if err != nil {
+			log.Printf("Error while sending questions list reply: %v", err)
+			return
+		}
+		return
+	case "list_answers":
+		var questionID int
+		questionID, err = parseListAnswersArgs(commandArgs)
+		if err != nil {
+			err = sendWrongFormatReply(bot, update.InlineQuery.ID)
+			if err != nil {
+				log.Printf("Error while sending bad command format reply")
+				return
+			}
+			return
+		}
+		err = sendAnswersListReply(bot, store, update.InlineQuery.ID,
+			questionID, update.InlineQuery.Offset)
+		if err != nil {
+			log.Printf("Error while sending answers list reply: %v", err)
+			return
+		}
+		return
+
+	case "list_answers_to_me":
+		err = sendListAnswersToUserReply(bot, store, update.InlineQuery.ID,
+			update.InlineQuery.From.UserName, update.InlineQuery.Offset)
+		if err != nil {
+			log.Printf("Error while sending answers list reply %v", err)
+			return
+		}
+	case "list_my_questions":
+		err = sendUserQuestionListReply(bot,
+			store, update.InlineQuery.ID, update.InlineQuery.From.UserName, update.InlineQuery.Offset)
+		if err != nil {
+			log.Printf("Error sending list_my_questions reply")
+		}
+	case "question":
+		fallthrough
+	case "question_to":
+		fallthrough
+	case "answer":
+		fallthrough
+	case "delete_answer":
+		fallthrough
+	case "delete_question":
+		fallthrough
+	default:
 		err = sendNotExistReply(bot, update)
 		if err != nil {
 			log.Printf("Error while sending not exists reply")
@@ -170,55 +454,67 @@ func processInlineQuery(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQ
 		return
 	}
 
-	switch command {
-	case "list_questions":
-		err = sendQuestionListReply(bot, store, update.InlineQuery.ID, AllGroupName)
-		if err != nil {
-			log.Printf("Error while sending questions reply")
-			return
-		}
-		return
+	return
+}
 
-	case "list_questions_to_me":
-		err = sendQuestionListReply(bot, store, update.InlineQuery.ID, update.InlineQuery.From.UserName)
-		if err != nil {
-			log.Printf("Error while sending questions reply %v", err)
-			return
-		}
+func (s *SQLStore) findQuestionsFrom(user string,
+	limit int, offset int) (questions []*Question, err error) {
+
+	rows, err := s.db.Query(`SELECT id, user, content, time,  receiver, isClosed, chatID
+                            FROM Questions WHERE user = ? AND isClosed = 0 LIMIT ? OFFSET ?`,
+		user, limit, offset)
+	if err != nil {
 		return
 	}
-	var answers []interface{}
+	defer rows.Close()
 
-	offset := 0
-	if update.InlineQuery.Offset != "" {
-		offset, err = strconv.Atoi(update.InlineQuery.Offset)
+	for rows.Next() {
+		var q Question
+		var unixTime int64
+		var rec_name string
+		err = rows.Scan(&q.QuestionID, &q.User, &q.Text, &unixTime, &rec_name, &q.IsClosed, &q.ChatID)
 		if err != nil {
 			log.Println(err)
 			return
 		}
+		q.Rec = NewReceiver(rec_name)
+		q.Date = time.Unix(unixTime, 0).UTC()
+		questions = append(questions, &q)
 	}
+	return
+}
 
-	for i := 0; i < 10; i++ {
-		result := tgbotapi.NewInlineQueryResultArticleMarkdown(strconv.Itoa(offset+i),
-			"hi"+strconv.Itoa(offset+i), "k")
-		reply := tgbotapi.NewInlineKeyboardMarkup([]tgbotapi.InlineKeyboardButton{tgbotapi.NewInlineKeyboardButtonData("fg", "fg")})
-		result.ReplyMarkup = &reply
-		answers = append(answers, result)
-	}
-
-	inlineConfig := tgbotapi.InlineConfig{
-		InlineQueryID: update.InlineQuery.ID,
-		IsPersonal:    true,
-		CacheTime:     0,
-		Results:       answers,
-		NextOffset:    strconv.Itoa(offset + 1),
-	}
-
-	_, err = bot.AnswerInlineQuery(inlineConfig)
-
+func (s *SQLStore) getAnswersFor(user string, limit int, offset int) (answers []*Answer, err error) {
+	rows, err := s.db.Query(`SELECT id, user, content, time, questionID
+                      FROM Answers
+		              WHERE Answers.questionID
+		              IN (SELECT id FROM Questions
+		                  WHERE user = ?) LIMIT ? OFFSET ?`, user, limit, offset)
 	if err != nil {
-		log.Println(err)
+		return
 	}
+	defer rows.Close()
+	for rows.Next() {
+		var answer Answer
+		var date int64
+		err = rows.Scan(&answer.AnswerID, &answer.User, &answer.Text, &date, &answer.QuestionID)
+		if err != nil {
+			return
+		}
+		answer.Date = time.Unix(date, 0)
+		answers = append(answers, &answer)
+	}
+	return
+}
 
+func parseListAnswersArgs(argsString string) (questionID int, err error) {
+	if strings.Contains(strings.TrimSpace(argsString), " ") {
+		err = WrongCommandFormat
+		return
+	}
+	questionID, err = strconv.Atoi(argsString)
+	if err != nil {
+		return
+	}
 	return
 }

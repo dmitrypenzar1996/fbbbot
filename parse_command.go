@@ -7,6 +7,23 @@ import (
 	"strings"
 )
 
+func parseSlashQuestion(m *tgbotapi.Message) (q *Question, err error) {
+	q = new(Question)
+	q.Date = m.Time().UTC()
+	q.User = m.From.UserName
+	q.Rec = NewReceiver(AllGroupName)
+	q.Text = m.CommandArguments()
+	if strings.TrimSpace(q.Text) == "" {
+		err = WrongCommandFormat
+		return
+	}
+	q.Answers = []*Answer{}
+	q.IsClosed = false
+	q.ChatID = m.Chat.ID
+	q.QuestionID = -1
+	return
+}
+
 func parseSlashQuestionTo(m *tgbotapi.Message) (q *Question, err error) {
 	q = new(Question)
 	q.Date = m.Time().UTC()
@@ -77,10 +94,8 @@ func parseSlashAnswer(m *tgbotapi.Message) (answer *Answer, err error) {
 		Text:       cmd_args[1],
 		User:       m.From.UserName,
 		QuestionID: quest_id,
+		Date:       m.Time(),
 	}
-	answer.Text = cmd_args[1]
-	answer.User = m.From.UserName
-	answer.QuestionID = quest_id
 	return
 }
 

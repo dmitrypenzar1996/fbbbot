@@ -1,11 +1,10 @@
 package main
 
 import (
-	_ "github.com/mattn/go-sqlite3"
 	"database/sql"
+	_ "github.com/mattn/go-sqlite3"
 	"log"
 	"time"
-
 )
 
 func NewSQLStore(path string) (store *SQLStore, err error) {
@@ -125,6 +124,57 @@ func (s *SQLStore) openQuestion(questionID int) (err error) {
 		questionID)
 	if err != nil {
 		return
+	}
+	return
+}
+
+func (s *SQLStore) findQuestionsTo(receiver string,
+	limit int, offset int) (questions []*Question, err error) {
+
+	rows, err := s.db.Query(`SELECT id, user, content, time,  receiver, isClosed, chatID
+                            FROM Questions WHERE receiver = ? AND isClosed = 0 LIMIT ? OFFSET ?`,
+		receiver, limit, offset)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var q Question
+		var unixTime int64
+		var rec_name string
+		err = rows.Scan(&q.QuestionID, &q.User, &q.Text, &unixTime, &rec_name, &q.IsClosed, &q.ChatID)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		q.Rec = NewReceiver(rec_name)
+		q.Date = time.Unix(unixTime, 0).UTC()
+		questions = append(questions, &q)
+	}
+	return
+}
+
+func (s *SQLStore) findAnswersFor(questionID int,
+	limit int, offset int) (answers []*Answer, err error) {
+	rows, err := s.db.Query(`SELECT id, user, content, time, questionID
+                                   FROM Answers
+                                   WHERE questionID = ? LIMIT ? OFFSET ?`,
+		questionID, limit, offset)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var a Answer
+		var unixTime int64
+		err = rows.Scan(&a.AnswerID, &a.User, &a.Text, &unixTime, &a.QuestionID)
+		if err != nil {
+			return
+		}
+		log.Println(unixTime)
+		a.Date = time.Unix(unixTime, 0)
+		answers = append(answers, &a)
 	}
 	return
 }
