@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+func isUserChat(chat *tgbotapi.Chat) (b bool) {
+	b = chat.IsPrivate() && !(chat.IsGroup() || chat.IsSuperGroup() || chat.IsChannel())
+	return
+}
+
 func processCommand(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStore) (err error) {
 
 	log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
@@ -50,7 +55,7 @@ func processCommand(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLSto
 func questionCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, err error) {
 	q, err := parseSlashQuestion(m)
 	if err != nil {
-		log.Printf("Unvalid command format\n")
+		log.Println("Unvalid command format")
 		reply = "Неверный формат команды"
 		return
 	}
@@ -72,6 +77,7 @@ func questionToCommandExec(m *tgbotapi.Message, store *SQLStore) (reply string, 
 		return
 	}
 	questionID, err := store.addQuestion(q)
+	q.QuestionID = questionID
 	if err != nil {
 		log.Printf("Error while adding question : %v\n", err)
 		reply = "Ошибка доступа к базе данных"
@@ -317,7 +323,7 @@ func deleteQuestionCommandExec(m *tgbotapi.Message, store *SQLStore) (reply stri
 func commandExec(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStore) (reply string, err error) {
 	switch update.Message.Command() {
 	case "start":
-		reply = getStartReply()
+		reply = startCommandExec(update.Message, store)
 	case "close":
 		reply, err = closeCommandExec(update.Message, store)
 		if err != nil {
@@ -397,7 +403,17 @@ func makeAskerNotification(answer *Answer, question *Question) (msg tgbotapi.Mes
 	return
 }
 
-func getStartReply() (reply string) {
+func makeAskedPersonNotification(question *Question, chatID int64) (msg tgbotapi.MessageConfig) {
+	message_text := fmt.Sprintf(
+		`@%s задал вопрос [%d]:
+"%s"`,
+		question.User, question.QuestionID, question.Text)
+
+	msg = tgbotapi.NewMessage(chatID, message_text)
+	return
+}
+
+func startCommandExec(message *tgbotapi.Message, store *SQLStore) (reply string) {
 	reply = "Привет, я телеграм бот, созданный для управления чатами групп ФББ"
 	return
 }

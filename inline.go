@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func processQuery(query string) (command string, commandArgs string) {
+func parseQuery(query string) (command string, commandArgs string) {
 	splitRes := strings.SplitN(query, " ", 2)
 	command = strings.TrimSpace(splitRes[0])
 	if len(splitRes) == 2 {
@@ -128,7 +128,7 @@ func sendChunkQuestionsReply(bot *tgbotapi.BotAPI, queryId string,
 
 }
 
-func sendQuestionList(bot *tgbotapi.BotAPI, store *SQLStore,
+func sendQuestionList(bot *tgbotapi.BotAPI,
 	queryID string, offset int, questions []*Question) (err error) {
 	if len(questions) == 0 {
 		if offset == 0 {
@@ -167,7 +167,7 @@ func sendQuestionListReply(bot *tgbotapi.BotAPI,
 		log.Printf("Error accessing sql store: %v", err)
 		return
 	}
-	err = sendQuestionList(bot, store, queryID, offset, questions)
+	err = sendQuestionList(bot, queryID, offset, questions)
 	if err != nil {
 		log.Printf("Error sending questions: %v", err)
 		return
@@ -363,7 +363,7 @@ func sendUserQuestionListReply(bot *tgbotapi.BotAPI,
 		log.Printf("Error accessing sql store: %v", err)
 		return
 	}
-	err = sendQuestionList(bot, store, queryID, offset, questions)
+	err = sendQuestionList(bot, queryID, offset, questions)
 	if err != nil {
 		log.Printf("Error sending questions: %v", err)
 		return
@@ -383,7 +383,7 @@ func processInlineQuery(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQ
 		}
 		return
 	}
-	command, commandArgs := processQuery(query)
+	command, commandArgs := parseQuery(query)
 
 	switch command {
 	case "list_questions":
@@ -436,10 +436,12 @@ func processInlineQuery(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQ
 			log.Printf("Error sending list_my_questions reply")
 		}
 	case "question":
-		fallthrough
+		err = sendAddQuestionToAllReply(bot, update.InlineQuery)
+		return
 	case "question_to":
-		fallthrough
+		err = sendAddQuestionToUserReply(bot, update.InlineQuery)
 	case "answer":
+		//err = sendAddAnswerReply(bot, update.InlineQuery)
 		fallthrough
 	case "delete_answer":
 		fallthrough
@@ -453,7 +455,119 @@ func processInlineQuery(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQ
 		}
 		return
 	}
+	return
+}
 
+func sendAddQuestionToUserReply(bot *tgbotapi.BotAPI, query *tgbotapi.InlineQuery) (err error) {
+	question, err := parseQuestionToQuery(query)
+	if err != nil {
+		err = sendWrongFormatReply(bot, query.ID)
+		if err != nil {
+			log.Printf("Error while sending wrong format query: %v", err)
+		}
+		return
+	}
+
+	err = sendAddQuestionReply(bot, query.ID, question)
+	if err != nil {
+		log.Printf("Error sending answer inline query :%v", err)
+		return
+	}
+	return
+}
+
+func sendAddQuestionToAllReply(bot *tgbotapi.BotAPI, query *tgbotapi.InlineQuery) (err error) {
+	question, err := parseQuestionQuery(query)
+	if err != nil {
+		err = sendWrongFormatReply(bot, query.ID)
+		if err != nil {
+			log.Printf("Error while sending wrong format query: %v", err)
+		}
+		return
+	}
+
+	err = sendAddQuestionReply(bot, query.ID, question)
+	if err != nil {
+		log.Printf("Error sending answer inline query :%v", err)
+		return
+	}
+
+	return
+}
+
+func sendAddQuestionReply(bot *tgbotapi.BotAPI, queryID string, question *Question) (err error) {
+	tag := messagePull.addMessage(Message(question))
+
+	messageText := fmt.Sprintf(markAsBotText("Подтверждение"))
+
+	reply := tgbotapi.NewInlineQueryResultArticleMarkdown("1",
+		"Отправить вопрос", messageText)
+
+	replyMarkup := tgbotapi.NewInlineKeyboardMarkup([]tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("Отправить",
+			tag)})
+
+	reply.ReplyMarkup = &replyMarkup
+
+	inlineConfig := tgbotapi.InlineConfig{
+		InlineQueryID: queryID,
+		IsPersonal:    true,
+		CacheTime:     0,
+		Results:       []interface{}{reply},
+		NextOffset:    "",
+	}
+
+	_, err = bot.AnswerInlineQuery(inlineConfig)
+	if err != nil {
+
+		return
+	}
+	return
+}
+
+func parseQuestionQuery(query *tgbotapi.InlineQuery) (question *Question, err error) {
+	_, questionText := parseQuery(query.Query)
+	if strings.TrimSpace(questionText) == "" {
+		err = WrongCommandFormat
+		return
+	}
+	question = &Question{
+		User:       query.From.UserName,
+		Text:       questionText,
+		Date:       time.Now().UTC(),
+		Rec:        &Receiver{AllGroupName},
+		Answers:    []*Answer{},
+		IsClosed:   false,
+		ChatID:     InlineChatID,
+		QuestionID: -1,
+	}
+	return
+}
+
+func parseQuestionToQuery(query *tgbotapi.InlineQuery) (question *Question, err error) {
+	_, argsStr := parseQuery(query.Query)
+	args := strings.SplitN(argsStr, " ", 2)
+	if len(args) != 2 {
+		err = WrongCommandFormat
+		return
+	}
+	questionRecName := strings.Replace(args[0], "@", "", -1)
+	questionText := args[1]
+	if strings.TrimSpace(questionText) == "" || strings.TrimSpace(questionRecName) == "" {
+		err = WrongCommandFormat
+		return
+	}
+
+	question = &Question{
+		User:       query.From.UserName,
+		Text:       questionText,
+		Date:       time.Now().UTC(),
+		Rec:        &Receiver{questionRecName},
+		Answers:    []*Answer{},
+		IsClosed:   false,
+		ChatID:     InlineChatID,
+		QuestionID: -1,
+	}
 	return
 }
 

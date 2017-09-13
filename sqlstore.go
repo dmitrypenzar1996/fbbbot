@@ -21,6 +21,10 @@ func NewSQLStore(path string) (store *SQLStore, err error) {
 	if err != nil {
 		return
 	}
+	err = store.createUsersTable()
+	if err != nil {
+		return
+	}
 	return
 }
 
@@ -52,6 +56,49 @@ func (s *SQLStore) createAnswersTable() (err error) {
 		questionID integer
 	)`
 	_, err = s.db.Exec(creationQuery)
+	if err != nil {
+		return
+	}
+	return
+}
+
+func (s *SQLStore) createUsersTable() (err error) {
+	creationQuery := `
+	CREATE TABLE IF NOT EXISTS Users(
+	    id integer,
+	    name text primary key,
+	    chatID
+	)`
+	_, err = s.db.Exec(creationQuery)
+	if err != nil {
+		return
+	}
+	return
+}
+
+type User struct {
+	ID     int
+	Name   string
+	ChatID int64
+}
+
+func (s *SQLStore) addUser(user *User) (err error) {
+	s.Lock()
+	defer s.Unlock()
+	tx, err := s.db.Begin()
+	defer tx.Commit()
+	_, err = tx.Exec(`INSERT INTO Users (id, name, chatID)
+	                VALUES (?, ?, ?)`, user.ID, user.Name, user.ChatID)
+	if err != nil {
+		return
+	}
+	return
+}
+
+func (s *SQLStore) getUserChatID(userName string) (chatID int64, err error) {
+	row := s.db.QueryRow(`SELECT chatID FROM Users
+                                      WHERE name = ?`, userName)
+	err = row.Scan(&chatID)
 	if err != nil {
 		return
 	}
