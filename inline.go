@@ -63,15 +63,15 @@ func simpleQuestionToReply(q *Question, id int) (reply tgbotapi.InlineQueryResul
 	dateText := formatDate(q.Date)
 	replyText := fmt.Sprintf(`
 Информация о вопросе [%d]
-*Задавший*: @%s
-*Дата*: %s:
-*Текст вопроса*:
+Задавший: @%s
+Дата: %s:
+Текст вопроса:
 "%s"`, q.QuestionID, q.User, dateText, q.Text)
 	replyText = markAsBotText(replyText)
 
 	replyTitle := fmt.Sprintf("От @%s в %s", q.User, dateText)
 
-	reply = tgbotapi.NewInlineQueryResultArticleMarkdown(strconv.Itoa(id),
+	reply = tgbotapi.NewInlineQueryResultArticle(strconv.Itoa(id),
 		replyTitle, replyText) //"Question"+strconv.Itoa(q.QuestionID))
 
 	if len(q.Text) > MaxShownMessageLength {
@@ -203,17 +203,17 @@ func answerToReply(store *SQLStore, a *Answer, id int) (reply tgbotapi.InlineQue
 	log.Println(a.Date)
 	dateText := formatDate(a.Date)
 	replyText := fmt.Sprintf(`Информация о ответе %d
-*Вопрос : %s*
-*Ответивший*: @%s
-*Дата*: %s:
-*Текст ответа*:
-"%s"`, a.AnswerID, q.Text, a.User, dateText, a.Text)
+Вопрос : %s
+Ответивший: @%s
+Дата: %s:
+Текст ответа:
+'%s'`, a.AnswerID, q.Text, a.User, dateText, a.Text)
 
 	replyText = markAsBotText(replyText)
 
 	replyTitle := fmt.Sprintf("От @%s в %s", a.User, dateText)
 
-	reply = tgbotapi.NewInlineQueryResultArticleMarkdown(strconv.Itoa(id),
+	reply = tgbotapi.NewInlineQueryResultArticle(strconv.Itoa(id),
 		replyTitle, replyText)
 	if len(a.Text) > MaxShownMessageLength {
 		reply.Description = fmt.Sprintf("%s...", a.Text[:MaxShownMessageLength])
@@ -294,6 +294,7 @@ func sendListAnswers(bot *tgbotapi.BotAPI, store *SQLStore,
 		}
 	}
 
+
 	err = sendChunkAnswersReply(bot, store, queryID, answers, offset)
 	if err != nil {
 		log.Printf("Error while sending chunk of answers: %v", err)
@@ -309,12 +310,20 @@ func sendChunkAnswersReply(bot *tgbotapi.BotAPI, store *SQLStore, queryID string
 		replies = append(replies, answerToReply(store, a, id))
 	}
 
+
+	var nextOffset string
+	if len(replies) == MaxSendInlineObjects{
+		nextOffset = strconv.Itoa(offset + len(replies))
+	}else{
+		nextOffset = ""
+	}
+
 	inlineConfig := tgbotapi.InlineConfig{
 		InlineQueryID: queryID,
 		IsPersonal:    true,
 		CacheTime:     0,
 		Results:       replies,
-		NextOffset:    strconv.Itoa(offset + len(replies)),
+		NextOffset:    nextOffset,
 	}
 
 	_, err = bot.AnswerInlineQuery(inlineConfig)
@@ -640,7 +649,7 @@ func sendAddMessageReply(bot *tgbotapi.BotAPI, queryID string, message Message) 
 
 	messageText := fmt.Sprintf(markAsBotText("Нажмите на кнопку, чтобы подтвердить действие"))
 
-	reply := tgbotapi.NewInlineQueryResultArticleMarkdown("1",
+	reply := tgbotapi.NewInlineQueryResultArticle("1",
 		"Отправить", messageText)
 
 	replyMarkup := tgbotapi.NewInlineKeyboardMarkup([]tgbotapi.InlineKeyboardButton{
