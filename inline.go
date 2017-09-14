@@ -57,7 +57,9 @@ func markAsBotText(in string) (out string) {
 	return
 }
 
-func questionToReply(q *Question, id int) (reply tgbotapi.InlineQueryResultArticle) {
+type QuestionToReplyConverter func(q *Question, id int) (reply tgbotapi.InlineQueryResultArticle)
+
+func simpleQuestionToReply(q *Question, id int) (reply tgbotapi.InlineQueryResultArticle) {
 	dateText := formatDate(q.Date)
 	replyText := fmt.Sprintf(`
 Информация о вопросе [%d]
@@ -77,6 +79,20 @@ func questionToReply(q *Question, id int) (reply tgbotapi.InlineQueryResultArtic
 	} else {
 		reply.Description = q.Text
 	}
+	return
+}
+
+func appendReply(reply *tgbotapi.InlineQueryResultArticle, tag string, text string) {
+	row := []tgbotapi.InlineKeyboardButton{tgbotapi.NewInlineKeyboardButtonData(text, tag)}
+
+	if reply.ReplyMarkup == nil {
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(row)
+		reply.ReplyMarkup = &keyboard
+		return
+	}
+	buttonRows := reply.ReplyMarkup.InlineKeyboard
+	reply.ReplyMarkup.InlineKeyboard = append(buttonRows, row)
+
 	return
 }
 
@@ -106,10 +122,10 @@ func sendNoQuestionsReply(bot *tgbotapi.BotAPI, queryId string) (err error) {
 }
 
 func sendChunkQuestionsReply(bot *tgbotapi.BotAPI, queryId string,
-	questions []*Question, offset int) (err error) {
+	questions []*Question, offset int, converter QuestionToReplyConverter) (err error) {
 	var replies []interface{}
 	for id, q := range questions {
-		replies = append(replies, questionToReply(q, id))
+		replies = append(replies, converter(q, id))
 	}
 
 	inlineConfig := tgbotapi.InlineConfig{
@@ -129,7 +145,8 @@ func sendChunkQuestionsReply(bot *tgbotapi.BotAPI, queryId string,
 }
 
 func sendQuestionList(bot *tgbotapi.BotAPI,
-	queryID string, offset int, questions []*Question) (err error) {
+	queryID string, offset int, questions []*Question,
+	converter QuestionToReplyConverter) (err error) {
 	if len(questions) == 0 {
 		if offset == 0 {
 			err = sendNoQuestionsReply(bot, queryID)
@@ -147,7 +164,7 @@ func sendQuestionList(bot *tgbotapi.BotAPI,
 		}
 	}
 
-	err = sendChunkQuestionsReply(bot, queryID, questions, offset)
+	err = sendChunkQuestionsReply(bot, queryID, questions, offset, converter)
 	if err != nil {
 		return
 	}
@@ -167,7 +184,7 @@ func sendQuestionListReply(bot *tgbotapi.BotAPI,
 		log.Printf("Error accessing sql store: %v", err)
 		return
 	}
-	err = sendQuestionList(bot, queryID, offset, questions)
+	err = sendQuestionList(bot, queryID, offset, questions, simpleQuestionToReply)
 	if err != nil {
 		log.Printf("Error sending questions: %v", err)
 		return
@@ -363,7 +380,7 @@ func sendUserQuestionListReply(bot *tgbotapi.BotAPI,
 		log.Printf("Error accessing sql store: %v", err)
 		return
 	}
-	err = sendQuestionList(bot, queryID, offset, questions)
+	err = sendQuestionList(bot, queryID, offset, questions, simpleQuestionToReply)
 	if err != nil {
 		log.Printf("Error sending questions: %v", err)
 		return
@@ -429,23 +446,56 @@ func processInlineQuery(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQ
 			log.Printf("Error while sending answers list reply %v", err)
 			return
 		}
+		return
 	case "list_my_questions":
 		err = sendUserQuestionListReply(bot,
 			store, update.InlineQuery.ID, update.InlineQuery.From.UserName, update.InlineQuery.Offset)
 		if err != nil {
 			log.Printf("Error sending list_my_questions reply")
 		}
+		return
 	case "question":
 		err = sendAddQuestionToAllReply(bot, update.InlineQuery)
+		if err != nil {
+			log.Printf("Error sending question reply: %v", err)
+		}
 		return
 	case "question_to":
 		err = sendAddQuestionToUserReply(bot, update.InlineQuery)
+		if err != nil {
+			log.Printf("Error sending question_to reply: %v", err)
+		}
+		return
 	case "answer":
-		//err = sendAddAnswerReply(bot, update.InlineQuery)
+		err = sendAddAnswerReply(bot, update.InlineQuery)
+		if err != nil {
+			log.Printf("Error sending answer reply: %v", err)
+		}
+		return
+	case "close_my":
+		err = sendCloseReply(bot, store, update.InlineQuery, "my")
+		if err != nil {
+			log.Printf("Error sending close_my reply: %v", err)
+		}
+		return
+	case "close_to":
+		err = sendCloseReply(bot, store, update.InlineQuery, "to")
+		if err != nil {
+			log.Printf("Error sending close_to reply: %v", err)
+		}
+		return
+	case "a_close":
+
+		err = sendCloseReply(bot, store, update.InlineQuery, "admin")
+		if err != nil {
+			log.Printf("Error sending a_close reply: %v", err)
+		}
+		return
+	case "open_my":
 		fallthrough
-	case "delete_answer":
+	case "open_to":
 		fallthrough
-	case "delete_question":
+	case "a_open":
 		fallthrough
 	default:
 		err = sendNotExistReply(bot, update)
@@ -458,6 +508,94 @@ func processInlineQuery(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQ
 	return
 }
 
+func sendCloseReply(bot *tgbotapi.BotAPI, store *SQLStore,
+	query *tgbotapi.InlineQuery, accessType string) (err error) {
+	if !inGroup(appConfig.Admins, query.From.UserName) {
+		sendSimpleStringReply(bot, query.ID, "Недостаточные права")
+		err = NotEnoughPermissions
+		return
+	}
+
+	offset, err := convertQueryOffset(query.Offset)
+	if err != nil {
+		log.Printf("Error converting query offset")
+		return
+	}
+
+	var questions []*Question
+	switch accessType {
+	case "my":
+		questions, err = store.findQuestionsFrom(query.From.UserName, MaxSendInlineObjects, offset)
+	case "to":
+		questions, err = store.findQuestionsTo(query.From.UserName, MaxSendInlineObjects, offset)
+	case "admin":
+		questions, err = store.findQuestionsTo(AllGroupName, MaxSendInlineObjects, offset)
+	default:
+		err = WrongValue
+		log.Printf("Wrong value for accessType: %v", accessType)
+		return
+	}
+
+	if err != nil {
+		log.Printf("Error accesing database: %v", err)
+		return
+	}
+
+	converter := func(q *Question, id int) (reply tgbotapi.InlineQueryResultArticle) {
+		reply = simpleQuestionToReply(q, id)
+		yesTag := makeCallbackData(CallbackCloseCommand, strconv.Itoa(q.QuestionID))
+		appendReply(&reply, yesTag, "Закрыть вопрос")
+		return
+	}
+
+	err = sendQuestionList(bot, query.ID, offset, questions, converter)
+	if err != nil {
+		log.Println("Error sending question list")
+		return
+	}
+	return
+}
+
+func sendAddAnswerReply(bot *tgbotapi.BotAPI, query *tgbotapi.InlineQuery) (err error) {
+	answer, err := parseAnswerQuery(query)
+	if err != nil {
+		err = sendWrongFormatReply(bot, query.ID)
+		if err != nil {
+			log.Printf("Error while sending wrong format query: %v", err)
+		}
+		return
+	}
+
+	err = sendAddMessageReply(bot, query.ID, answer)
+	if err != nil {
+		log.Printf("Error sending answer inline query :%v", err)
+		return
+	}
+	return
+}
+
+func parseAnswerQuery(query *tgbotapi.InlineQuery) (answer *Answer, err error) {
+	_, args_str := parseQuery(query.Query)
+	args_lst := strings.SplitN(args_str, " ", 2)
+	if len(args_lst) != 2 {
+		err = WrongCommandFormat
+		return
+	}
+	questionID, err := strconv.Atoi(args_lst[0])
+	if err != nil {
+		return
+	}
+	answer = &Answer{
+		AnswerID:   -1,
+		User:       query.From.UserName,
+		Text:       args_lst[1],
+		Date:       time.Now(),
+		QuestionID: questionID,
+	}
+	return
+
+}
+
 func sendAddQuestionToUserReply(bot *tgbotapi.BotAPI, query *tgbotapi.InlineQuery) (err error) {
 	question, err := parseQuestionToQuery(query)
 	if err != nil {
@@ -468,7 +606,7 @@ func sendAddQuestionToUserReply(bot *tgbotapi.BotAPI, query *tgbotapi.InlineQuer
 		return
 	}
 
-	err = sendAddQuestionReply(bot, query.ID, question)
+	err = sendAddMessageReply(bot, query.ID, question)
 	if err != nil {
 		log.Printf("Error sending answer inline query :%v", err)
 		return
@@ -486,7 +624,7 @@ func sendAddQuestionToAllReply(bot *tgbotapi.BotAPI, query *tgbotapi.InlineQuery
 		return
 	}
 
-	err = sendAddQuestionReply(bot, query.ID, question)
+	err = sendAddMessageReply(bot, query.ID, question)
 	if err != nil {
 		log.Printf("Error sending answer inline query :%v", err)
 		return
@@ -495,17 +633,19 @@ func sendAddQuestionToAllReply(bot *tgbotapi.BotAPI, query *tgbotapi.InlineQuery
 	return
 }
 
-func sendAddQuestionReply(bot *tgbotapi.BotAPI, queryID string, question *Question) (err error) {
-	tag := messagePull.addMessage(Message(question))
+func sendAddMessageReply(bot *tgbotapi.BotAPI, queryID string, message Message) (err error) {
+	tag := messagePull.addMessage(message)
+	log.Println(tag)
+	data := makeCallbackData(CallbackAddCommand, tag)
 
-	messageText := fmt.Sprintf(markAsBotText("Подтверждение"))
+	messageText := fmt.Sprintf(markAsBotText("Нажмите на кнопку, чтобы подтвердить действие"))
 
 	reply := tgbotapi.NewInlineQueryResultArticleMarkdown("1",
-		"Отправить вопрос", messageText)
+		"Отправить", messageText)
 
 	replyMarkup := tgbotapi.NewInlineKeyboardMarkup([]tgbotapi.InlineKeyboardButton{
-		tgbotapi.NewInlineKeyboardButtonData("Отправить",
-			tag)})
+		tgbotapi.NewInlineKeyboardButtonData("Подтвердить",
+			data)})
 
 	reply.ReplyMarkup = &replyMarkup
 
@@ -538,7 +678,7 @@ func parseQuestionQuery(query *tgbotapi.InlineQuery) (question *Question, err er
 		Rec:        &Receiver{AllGroupName},
 		Answers:    []*Answer{},
 		IsClosed:   false,
-		ChatID:     InlineChatID,
+		ChatID:     -1,
 		QuestionID: -1,
 	}
 	return

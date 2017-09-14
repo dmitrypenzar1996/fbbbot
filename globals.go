@@ -11,6 +11,9 @@ var NotEnoughPermissions = errors.New("User has not enough permission for that a
 var NoteDoesntExist = errors.New("Note with such ID doesn't exist")
 var UknownCommand = errors.New("Unknown command")
 var WrongChatID = errors.New("Wrong chat id")
+var WrongCallbackDataFormat = errors.New("Wrong format of callback data")
+var WrongValue = errors.New("Wrong value")
+
 var InlineCommands = []string{"list_questions", "list_answers", "list_questions_to_me", "list_answers_to_me",
 	"question", "answer", "delete_answer", "delete_question"}
 
@@ -27,3 +30,7 @@ const dateFormat = "Jan 2, 2006 в 3:04pm"
 const inlineTempQuestionStoreTime = 3600
 const cleanQuestionPoolInterval = 1800
 const AllGroupChatID = -1001122437322
+const CallbackDataDelimiter = "|"
+const CallbackCloseCommand = "close"
+const CallbackCancelCommand = "ignore"
+const CallbackAddCommand = "add"

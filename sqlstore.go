@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// creates new SQLStore instance, connects to sqldatabase and creates, if not exists, required tables
 func NewSQLStore(path string) (store *SQLStore, err error) {
 	db, err := sql.Open("sqlite3", path)
 	if err != nil {
@@ -26,6 +27,14 @@ func NewSQLStore(path string) (store *SQLStore, err error) {
 		return
 	}
 	return
+}
+
+// stop connection to sql database
+func (s *SQLStore) Close() {
+	err := s.db.Close()
+	if err != nil {
+		log.Printf("Error while closing sqlstore: %v", err)
+	}
 }
 
 func (s *SQLStore) createQuestionsTable() (err error) {

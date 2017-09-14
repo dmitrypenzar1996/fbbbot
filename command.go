@@ -223,7 +223,7 @@ func answerCommandExec(m *tgbotapi.Message, store *SQLStore, bot *tgbotapi.BotAP
 
 func sendAskerNotification(bot *tgbotapi.BotAPI, answer *Answer, question *Question) (err error) {
 	log.Println("Making asker notification")
-	msg := makeAskerNotification(answer, question)
+	msg := makeAskerNotification(answer, question, question.ChatID)
 	var m tgbotapi.Message
 	m, err = bot.Send(msg)
 
@@ -394,22 +394,22 @@ func commandExec(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStore)
 	return
 }
 
-func makeAskerNotification(answer *Answer, question *Question) (msg tgbotapi.MessageConfig) {
+func makeAskerNotification(answer *Answer, question *Question, chatID int64) (msg tgbotapi.MessageConfig) {
 	message_text := fmt.Sprintf(
 		"На вопрос [%d], заданный @%s:\n        \"%s\"\n появился ответ от @%s:\n        \"%s\"",
 		question.QuestionID, question.User, question.Text, answer.User, answer.Text)
 
-	msg = tgbotapi.NewMessage(question.ChatID, message_text)
+	msg = tgbotapi.NewMessage(chatID, message_text)
 	return
 }
 
 func makeAskedPersonNotification(question *Question, chatID int64) (msg tgbotapi.MessageConfig) {
-	message_text := fmt.Sprintf(
+	messageText := fmt.Sprintf(
 		`@%s задал вопрос [%d]:
 "%s"`,
 		question.User, question.QuestionID, question.Text)
 
-	msg = tgbotapi.NewMessage(chatID, message_text)
+	msg = tgbotapi.NewMessage(chatID, messageText)
 	return
 }
 

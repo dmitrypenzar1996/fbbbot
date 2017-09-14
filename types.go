@@ -83,4 +83,5 @@ type MessagePull struct {
 	stop          chan struct{}
 	get           chan string
 	outMessages   chan Message
+	delete chan string // delete message immediately
 }

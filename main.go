@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"github.com/go-telegram-bot-api/telegram-bot-api"
 	"io/ioutil"
@@ -56,72 +55,31 @@ func main() {
 	updates, err := bot.GetUpdatesChan(u)
 
 	for update := range updates {
-		log.Println("receive update")
+		log.Println("Receive update")
 		go processUpdate(bot, &update, sqlstore)
 	}
 
 }
 
 func processUpdate(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStore) (err error) {
-	log.Println("Receive update")
-
 	if update.CallbackQuery != nil {
 		log.Println("Receive callback")
-		var m Message
-		m, err = messagePull.getMessage(update.CallbackQuery.Data)
+		var reply string
+		reply = proccessCallback(bot, update.CallbackQuery, store)
+
+		err = sendCallbackNotification(bot, update.CallbackQuery.ID, reply)
 		if err != nil {
-			log.Printf("Access to deleted question with tag %v", err)
-			//TODO here we should send notification, that question's been deleted
+			log.Printf("Error sending notification")
 			return
 		}
-
-		switch m.(type) {
-		case *Question:
-			log.Println("Adding question")
-			question := m.(*Question)
-
-			question.QuestionID, err = store.addQuestion(question)
-			if err != nil {
-				log.Printf("Error adding question database: %v", err)
-				return
-			}
-
-			var chatID int64
-			if question.Rec.User == AllGroupName {
-				chatID = AllGroupChatID
-			} else {
-				chatID, err = store.getUserChatID(question.Rec.User)
-				if err == sql.ErrNoRows {
-					log.Printf("Don't know user personal chat adress: %v", err)
-					return
-				} else if err != nil {
-					log.Printf("Error accesing sql database : %v", err)
-					return
-				}
-			}
-
-			msg := makeAskedPersonNotification(question, chatID)
-			_, err = bot.Send(msg)
-
-			if err != nil {
-				log.Printf("Error sending notification")
-				return
-			}
-
-			return
-		case *Answer:
-			log.Println("Adding answer")
-			log.Println(m.(*Answer).Text)
-			return
-		}
-
 		return
 	}
 	if (update.Message == nil) && (update.InlineQuery == nil) {
 		return
 	}
 	if update.InlineQuery != nil {
-		log.Println("Recognised as inline query")
+
+		log.Println(update.InlineQuery.ID)
 		err = processInlineQuery(bot, update, store)
 		if err != nil {
 			log.Println(err)
@@ -169,3 +127,4 @@ func processUpdate(bot *tgbotapi.BotAPI, update *tgbotapi.Update, store *SQLStor
 	}
 	return
 }
+
