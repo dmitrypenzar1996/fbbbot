@@ -188,7 +188,11 @@ func (s *SQLStore) findQuestionsTo(receiver string,
 	limit int, offset int) (questions []*Question, err error) {
 
 	rows, err := s.db.Query(`SELECT id, user, content, time,  receiver, isClosed, chatID
-                            FROM Questions WHERE receiver = ? AND isClosed = 0 LIMIT ? OFFSET ?`,
+                            FROM Questions
+                                WHERE receiver = ? AND isClosed = 0
+                            ORDER BY time DESC
+                            LIMIT ?
+                            OFFSET ?`,
 		receiver, limit, offset)
 	if err != nil {
 		return
@@ -215,7 +219,10 @@ func (s *SQLStore) findAnswersFor(questionID int,
 	limit int, offset int) (answers []*Answer, err error) {
 	rows, err := s.db.Query(`SELECT id, user, content, time, questionID
                                    FROM Answers
-                                   WHERE questionID = ? LIMIT ? OFFSET ?`,
+                                   WHERE questionID = ?
+                                   ORDER BY time DESC
+                                   LIMIT ?
+                                   OFFSET ?`,
 		questionID, limit, offset)
 	if err != nil {
 		return
@@ -237,7 +244,9 @@ func (s *SQLStore) findAnswersFor(questionID int,
 
 func (s *SQLStore) findAllQuestionsTo(receiver string) (questions []*Question, err error) {
 	rows, err := s.db.Query(`SELECT id, user, content, time,  receiver, isClosed, chatID
-                            FROM Questions WHERE receiver = ? AND isClosed = 0`, receiver)
+                            FROM Questions
+                                WHERE receiver = ? AND isClosed = 0
+                            ORDER BY time DESC`, receiver)
 	if err != nil {
 		return
 	}
@@ -380,7 +389,10 @@ func (s *SQLStore) deleteAnswer(answerID int) (err error) {
 }
 
 func (s *SQLStore) findAllAnswersFor(questionID int) (answers []*Answer, err error) {
-	rows, err := s.db.Query("SELECT id, user, content, time, questionID FROM Answers WHERE questionID = ?",
+	rows, err := s.db.Query(`SELECT id, user, content, time, questionID
+                                   FROM Answers
+                                   WHERE questionID = ?
+                                   ORDER BY time DESC`,
 		questionID)
 	if err != nil {
 		return
@@ -441,5 +453,61 @@ func (s *SQLStore) getAnswer(answerID int) (a *Answer, err error) {
 		return
 	}
 	a.Date = time.Unix(unixTime, 0)
+	return
+}
+
+func (s *SQLStore) findQuestionsFrom(user string,
+	limit int, offset int) (questions []*Question, err error) {
+
+	rows, err := s.db.Query(`SELECT id, user, content, time,  receiver, isClosed, chatID
+                            FROM Questions WHERE user = ? AND isClosed = 0
+                            ORDER BY time DESC
+                            LIMIT ?
+                            OFFSET ?`,
+		user, limit, offset)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var q Question
+		var unixTime int64
+		var rec_name string
+		err = rows.Scan(&q.QuestionID, &q.User, &q.Text, &unixTime, &rec_name, &q.IsClosed, &q.ChatID)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		q.Rec = NewReceiver(rec_name)
+		q.Date = time.Unix(unixTime, 0).UTC()
+		questions = append(questions, &q)
+	}
+	return
+}
+
+func (s *SQLStore) getAnswersFor(user string, limit int, offset int) (answers []*Answer, err error) {
+	rows, err := s.db.Query(`SELECT id, user, content, time, questionID
+                      FROM Answers
+		              WHERE Answers.questionID
+		              IN (SELECT id FROM Questions
+		                  WHERE user = ?)
+		              ORDER BY time DESC
+		              LIMIT ?
+		              OFFSET ?`, user, limit, offset)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var answer Answer
+		var date int64
+		err = rows.Scan(&answer.AnswerID, &answer.User, &answer.Text, &date, &answer.QuestionID)
+		if err != nil {
+			return
+		}
+		answer.Date = time.Unix(date, 0)
+		answers = append(answers, &answer)
+	}
 	return
 }

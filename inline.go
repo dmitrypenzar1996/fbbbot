@@ -20,7 +20,7 @@ func parseQuery(query string) (command string, commandArgs string) {
 
 func sendEnterReply(bot *tgbotapi.BotAPI, update *tgbotapi.Update) (err error) {
 	reply := tgbotapi.NewInlineQueryResultArticle("1", "Введите команду",
-		EmptyMessage)
+		markAsBotText(EmptyMessage))
 	inlineConfig := tgbotapi.InlineConfig{
 		InlineQueryID: update.InlineQuery.ID,
 		IsPersonal:    true,
@@ -37,7 +37,7 @@ func sendEnterReply(bot *tgbotapi.BotAPI, update *tgbotapi.Update) (err error) {
 
 func sendNotExistReply(bot *tgbotapi.BotAPI, update *tgbotapi.Update) (err error) {
 	reply := tgbotapi.NewInlineQueryResultArticle("1", NotExistsMessage,
-		NotExistsMessage)
+		markAsBotText(NotExistsMessage))
 	inlineConfig := tgbotapi.InlineConfig{
 		InlineQueryID: update.InlineQuery.ID,
 		IsPersonal:    true,
@@ -711,55 +711,7 @@ func parseQuestionToQuery(query *tgbotapi.InlineQuery) (question *Question, err 
 	return
 }
 
-func (s *SQLStore) findQuestionsFrom(user string,
-	limit int, offset int) (questions []*Question, err error) {
 
-	rows, err := s.db.Query(`SELECT id, user, content, time,  receiver, isClosed, chatID
-                            FROM Questions WHERE user = ? AND isClosed = 0 LIMIT ? OFFSET ?`,
-		user, limit, offset)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var q Question
-		var unixTime int64
-		var rec_name string
-		err = rows.Scan(&q.QuestionID, &q.User, &q.Text, &unixTime, &rec_name, &q.IsClosed, &q.ChatID)
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		q.Rec = NewReceiver(rec_name)
-		q.Date = time.Unix(unixTime, 0).UTC()
-		questions = append(questions, &q)
-	}
-	return
-}
-
-func (s *SQLStore) getAnswersFor(user string, limit int, offset int) (answers []*Answer, err error) {
-	rows, err := s.db.Query(`SELECT id, user, content, time, questionID
-                      FROM Answers
-		              WHERE Answers.questionID
-		              IN (SELECT id FROM Questions
-		                  WHERE user = ?) LIMIT ? OFFSET ?`, user, limit, offset)
-	if err != nil {
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var answer Answer
-		var date int64
-		err = rows.Scan(&answer.AnswerID, &answer.User, &answer.Text, &date, &answer.QuestionID)
-		if err != nil {
-			return
-		}
-		answer.Date = time.Unix(date, 0)
-		answers = append(answers, &answer)
-	}
-	return
-}
 
 func parseListAnswersArgs(argsString string) (questionID int, err error) {
 	if strings.Contains(strings.TrimSpace(argsString), " ") {
